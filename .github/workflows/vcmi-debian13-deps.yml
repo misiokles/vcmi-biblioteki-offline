@@ -1,0 +1,79 @@
+name: VCMI - Debian 13 libraries offline
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - '.github/workflows/vcmi-debian13-deps.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  download-libraries:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - name: Download development libraries inside Debian 13
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$GITHUB_WORKSPACE/bundle/packages"
+          docker run --rm \
+            -v "$GITHUB_WORKSPACE/bundle:/output" \
+            debian:trixie \
+            bash -euc '
+              export DEBIAN_FRONTEND=noninteractive
+              apt-get update
+
+              packages="
+                libboost-dev
+                libboost-filesystem-dev
+                libboost-program-options-dev
+                libboost-date-time-dev
+                libboost-iostreams-dev
+                libtbb-dev
+                libluajit-5.1-dev
+                liblua5.3-dev
+                libminizip-dev
+                zlib1g-dev
+                liblzma-dev
+                libsqlite3-dev
+                libfmt-dev
+                libcurl4-openssl-dev
+                libzstd-dev
+              "
+
+              # Fetch all not-yet-installed transitive dependencies.
+              mkdir -p /output/packages/partial
+              apt-get -y --no-install-recommends \
+                -o Dir::Cache::Archives=/output/packages \
+                --download-only install $packages
+
+              # Also capture explicitly requested packages already installed
+              # in the Debian base image (apt download-only would skip those).
+              cd /output/packages
+              for name in $packages; do
+                apt-get download "$name"
+              done
+
+              cd /output
+              dpkg --print-architecture > ARCHITECTURE.txt
+              printf "Debian 13 (trixie) - Debian official repositories\\n" > ORIGIN.txt
+              printf "%s\\n" $packages > REQUESTED_PACKAGES.txt
+              find packages -maxdepth 1 -name "*.deb" -type f | sort | xargs -r sha256sum > SHA256SUMS.txt
+              find packages -maxdepth 1 -name "*.deb" -type f | sort | while read -r package; do
+                dpkg-deb -f "$package" Package Version Architecture | paste - - -
+              done > DOWNLOADED_PACKAGES.tsv
+              echo "Downloaded $(find packages -maxdepth 1 -name "*.deb" -type f | wc -l) .deb files"
+              chmod -R a+rX /output
+            '
+
+      - name: Upload bundle as a ZIP artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: VCMI_Debian13_Libraries
+          path: bundle/
+          if-no-files-found: error
+          compression-level: 1
+          retention-days: 7
